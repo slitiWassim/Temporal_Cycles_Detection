@@ -4,7 +4,7 @@
 ## How the algorithm works 
 
 <a href="static/images/temporal_cycles.png" target="_blank">
-    <image style="border: 2px solid rgb(201, 196, 196);" src="static/images/temporal_cycles.png" width="80%">
+    <image style="border: 2px solid rgb(201, 196, 196);" src="static/images/temporal_cycles.png" width="100%">
 </a>
 
 ### 1) Strongly Connected Components decomposition
