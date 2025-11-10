@@ -21,8 +21,6 @@ def temporal_cycles(
     It combines a structural depth-first cycle search (based on Johnson's algorithm [1]_)
     with efficient temporal validation using stored edge timestamp histories.
 
-    The procedure builds preliminary (min, max) timestamp intervals for each edge to quickly
-    prune impossible transitions.
 
     Parameters
     ----------
