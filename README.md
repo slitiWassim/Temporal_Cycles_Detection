@@ -7,6 +7,15 @@
     <image style="border: 2px solid rgb(201, 196, 196);" src="static/images/temporal_cycles.png" width="100%">
 </a>
 
+Illustrative example of temporal cycle extraction from a temporal graph. 
+- ($\textbf{a}$)  is an example of a temporal cycle $(a \rightarrow b \rightarrow c \rightarrow d \rightarrow a)$. 
+- ($\textbf{b}$) Temporal graph with edges annotated by their corresponding timestamps. 
+- ($\textbf{c}$) A valid temporal cycle $(a \rightarrow b \rightarrow c \rightarrow d \rightarrow a)$ instance within the temporal graph, with duration $\delta = 9$ and length $L = 4$. 
+- ($\textbf{d}$) A structurally valid directed cycle that fails to satisfy temporal ordering, and therefore does not qualify as a temporal cycle.
+
+
+
+
 ### 1) Strongly Connected Components decomposition
 
 Following the [NetworkX implementation of Johnson’s algorithm](https://github.com/networkx/networkx/blob/main/networkx/algorithms/cycles.py) ,  the search is restricted to Strongly Connected Components .
