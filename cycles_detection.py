@@ -6,15 +6,15 @@ from raphtory import Graph
 
 
 # ---- Main function ----
-def time_respecting_cycles(
+def temporal_cycles(
     rolling_g,
     max_length=None,
     max_cycles=None,
     max_duration=None,
-    visited_memo=True
+    max_combo=None
 ):
     """
-    Enumerate **time-respecting cycles** in a Raphtory temporal directed graph.
+    Enumerate **temporal cycles** in a Raphtory temporal directed graph.
 
     This algorithm identifies all elementary cycles where the sequence of edge timestamps
     is **strictly increasing** — ensuring that the traversal follows the arrow of time.
@@ -43,10 +43,9 @@ def time_respecting_cycles(
         timestamps within a cycle. Cycles exceeding this temporal span are skipped.
         Default is ``None`` (no duration filter).
 
-    visited_memo : bool, optional, default=True
-        Enables memoization of previously visited node-interval states during
-        backtracking. This dramatically reduces redundant recursion and speeds
-        up traversal on large graphs.
+    max_combo : int, optional
+        Stop validating a cycle once this many temporal cycle timestamp
+        combinations have been found. Default is ``None`` (no limit).
 
     Yields
     ------
@@ -61,24 +60,21 @@ def time_respecting_cycles(
     The algorithm proceeds in several conceptual stages:
 
 
-    1. **Interval-based temporal adjacency (min, max) construction:**  
-       For every edge, build `(t_min, t_max)` intervals 
-
-    2. **SCC decomposition:**  
+    1. **SCC decomposition:**  
        Identify strongly connected components (SCCs) using Raphtory's built-in method.
        Following the implementation of NetworkX for detecting cycles in directed graphs,
        Johnson's algorithm is enhanced with well-known preprocessing techniques by restricting
        the search to strongly connected components. https://github.com/networkx/networkx/blob/main/networkx/algorithms/cycles.py
 
-    3. **Johnson-style search:**  
+    2. **Johnson-style search:**  
        Perform a modified Johnson's backtracking algorithm within each SCC to
        enumerate structural cycles, pruned by temporal interval compatibility.
       
-    4. **Cycle validation:**  
+    3. **Cycle validation:**  
        Each structural cycle is checked via ``validate_cycle()`` to ensure that
        an increasing sequence of timestamps exists along the edges.
 
-    5. **Yielding results:**  
+    4. **Yielding results:**  
        Only temporally valid cycles are yielded. Duration, length, and count
        constraints are enforced throughout.
 
@@ -104,36 +100,20 @@ def time_respecting_cycles(
     rolling_g = rolling_g.subgraph(nodes)
 
     cycle_count = [0]
-    adjacency = defaultdict(dict)
-
-    # ---- Build interval-based temporal adjacency (min, max) ----
-    for node in rolling_g.nodes:
-        for edge in node.out_edges:
-            times = edge.history().tolist()
-            if times is None or len(times) == 0:
-                continue
-
-            t_min, t_max = int(min(times)), int(max(times))
-            adjacency[node.name][edge.dst.name] = {
-                "interval": (t_min, t_max)
-            }
-
-
-    
 
     # ---- Main cycle search ----
     for comp in components:
         for start in comp:
             for raw_cycle_nodes,_ in johnson_cycle_search(start,
-                                                          adjacency,
+                                                          rolling_g,
                                                           cycle_count,
                                                           max_length,
                                                           max_cycles,
-                                                          max_duration,
-                                                          visited_memo):
+                                                          max_duration
+                                                           ):
                 
                 edge_cycle = list(zip(raw_cycle_nodes[:-1], raw_cycle_nodes[1:]))
-                valid_cycles = validate_cycle(rolling_g,edge_cycle)
+                valid_cycles = validate_cycle(rolling_g,edge_cycle,max_duration,max_combo)
                 if valid_cycles:
                     cycle_count[0] += len(valid_cycles)
                     for vc in valid_cycles:
@@ -144,24 +124,22 @@ def time_respecting_cycles(
 
 
 # ---- Johnson cycle search ----
-#   The depth-first traversal search that adapts Johnson's classical 
-#   cycle enumeration to temporal graphs, pruning infeasible paths using 
-#   timestamp interval compatibility checks.
-
+#   A modified Johnson-style cycle enumeration procedure extended to temporal graphs.
+#   Each candidate path is evaluated under timestamp interval constraints, ensuring that
+#   only structurally valid and temporally feasible cycles (strictly increasing in time)
+#   are enumerated.
 def johnson_cycle_search(
     start,
-    adjacency,
+    rolling_g,
     cycle_count,
     max_length,
     max_cycles,
-    max_duration,
-    visited_memo
+    max_duration
 ):
     path = [start]
     times_path = []
     blocked = set()
     B = defaultdict(set)
-    visited_states = set()
 
     def unblock(u):
         if u in blocked:
@@ -174,27 +152,21 @@ def johnson_cycle_search(
         closed = False
         blocked.add(v)
 
-        key = (v, None if prev_interval is None else (prev_interval[0], prev_interval[1], len(path)))
-        if visited_memo and key in visited_states:
-            blocked.remove(v)
-            return
-        if visited_memo:
-            visited_states.add(key)
-
-        for w, next_interval, _ in out_neighbors(v, prev_interval, adjacency):
+        for w, next_interval in out_neighbors(v, prev_interval, rolling_g):
             if max_duration and times_path:
-                duration = next_interval[1] - times_path[0][0]
+                duration = next_interval[0] - times_path[0][1]
                 if duration > max_duration:
                     continue
 
             if w == start:
-                duration = next_interval[1] - times_path[0][0] if times_path else 0
+                duration = next_interval[0] - times_path[0][1] if times_path else 0
                 if ((max_length is None or len(path) <= max_length)
                     and (max_duration is None or duration <= max_duration)):
                     yield (path[:] + [start], times_path[:] + [next_interval])
                     closed = True
                     if max_cycles and cycle_count[0] >= max_cycles:
                         return
+
             elif w not in path and (max_length is None or len(path) < max_length):
                 path.append(w)
                 times_path.append(next_interval)
@@ -209,53 +181,77 @@ def johnson_cycle_search(
         if closed:
             unblock(v)
         else:
-            for w_key in adjacency[v].keys():
-                B[w_key].add(v)
+            for edge in rolling_g.node(v).out_edges:
+                B[edge.dst.name].add(v)
 
     yield from backtrack(start, None)
 
 
-
-# ---- Helper:  Fast temporal feasibility check for edge intervals. ----
-def is_interval_compatible(prev_interval, next_interval):
-    return next_interval[1] > prev_interval[0]
-
-
 # ---- Generates feasible outgoing edges. ----
-def out_neighbors(node_id, prev_interval, adjacency):
-    for nbr, data in adjacency[node_id].items():
-        next_interval = data["interval"]
+def out_neighbors(node_id, prev_interval, rolling_g):
+    node = rolling_g.node(node_id)
+    for edge in node.out_edges:
 
+        # Earliest/Latest Time from temporal edges
+        next_interval = (int(edge.earliest_time), int(edge.latest_time))
+
+        # first edge -> always allowed
         if prev_interval is None:
-            yield nbr, next_interval, False
+            yield edge.dst.name, next_interval
             continue
 
-        if is_interval_compatible(prev_interval, next_interval):
-            yield nbr, next_interval, False
-            continue
+        # enforce strictly increasing feasible interval : Max(next_edge_times) > Min(prev_edge_times)
+        if next_interval[1] > prev_interval[0]:
+            yield edge.dst.name, next_interval
 
 
-# ---- validate_cycle : Checks whether an edge cycle satisfies time-respecting constraints. ----
-def validate_cycle(rolling_g,edge_cycle):
+
+# ---- validate_cycle : Checks whether an edge cycle satisfies temporal constraints. ----
+def validate_cycle(rolling_g, edge_cycle, max_duration=None, max_combo=None):
+    """
+    Validate whether a structural cycle (list of edges) admits one or more
+    strictly time-increasing realizations, optionally stopping once max_combo
+    realizations have been found.
+
+    Returns:
+        A list of unique (node_cycle_tuple, timestamp_list)
+    """
     time_lists = []
     for src, dst in edge_cycle:
         edge = rolling_g.edge(src=src, dst=dst)
         if edge is None:
             return []
         times = edge.history().tolist()
-        if times is None or len(times) == 0:
+        if not times:
             return []
-        time_lists.append(times)
+        time_lists.append(sorted(int(t) for t in times))
 
     node_path = [edge_cycle[0][0]] + [dst for _, dst in edge_cycle]
+    seen = set()
     results = []
 
-    # ---- Simple fallback ----
     def dfs(i, prev_t, combo):
-        if i == len(time_lists):
-            results.append((tuple(node_path), combo[:]))
+        # Early stop if reached max results
+        if max_combo is not None and len(results) >= max_combo:
             return
+
+        if i == len(time_lists):
+            if max_duration is not None and (combo[-1] - combo[0]) > max_duration:
+                return
+            nodes_tuple = tuple(node_path)
+            times_tuple = tuple(combo)
+            key = (nodes_tuple, times_tuple)
+            if key not in seen:
+                seen.add(key)
+                results.append((nodes_tuple, list(combo)))
+
+            return
+
         for t in time_lists[i]:
+            # Early stop inside loop too
+            if max_combo is not None and len(results) >= max_combo:
+                return
+
             if t > prev_t:
                 combo.append(t)
                 dfs(i + 1, t, combo)
@@ -263,6 +259,8 @@ def validate_cycle(rolling_g,edge_cycle):
 
     dfs(0, float("-inf"), [])
     return results
+
+
 
 
 
